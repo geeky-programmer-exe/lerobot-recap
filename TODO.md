@@ -22,7 +22,7 @@ python -c "import torch; print(torch.__version__); print(torch.cuda.is_available
 Install LeRobot with smolvla + libero extras
 
 ```bash
-cd /home/genisis/00_projects/lerobot
+cd <PATH TO LEROBOT FOLDER>
 pip install -e ".[smolvla,libero]"  
 ```
 
@@ -86,25 +86,25 @@ policy.eval()
 # Count trainable vs frozen params
 trainable = sum(p.numel() for p in policy.parameters() if p.requires_grad)
 frozen    = sum(p.numel() for p in policy.parameters() if not p.requires_grad)
-print(f"  Trainable params: {trainable/1e6:.1f}M  (should be ~100M action expert)")
-print(f"  Frozen params:    {frozen/1e6:.1f}M    (should be ~450M VLM)")
+print(f"  Trainable params: {trainable/1e6:.1f}M
+print(f"  Frozen params:    {frozen/1e6:.1f}M
 print("SmolVLA load OK")
 EOF
 ```
 
-Expected: trainable ~100M, frozen ~450M.
+Expected: trainable ~100M, frozen ~350M.
 
 
 ## Training
 
 Set dataset path:
 ```bash
-export HF_LEROBOT_HOME=....PATH TO DATA FOLDER
+export HF_LEROBOT_HOME=<PATH TO DATA FOLDER>
 ```
 
 ```bash
 conda activate recap
-cd /home/genisis/00_projects/lerobot
+cd <PATH TO LEROBOT>
 
 lerobot-train \
   --policy.type=smolvla \
