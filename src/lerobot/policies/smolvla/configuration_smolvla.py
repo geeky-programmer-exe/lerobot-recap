@@ -106,6 +106,45 @@ class SmolVLAConfig(PreTrainedConfig):
     # Real-Time Chunking (RTC) configuration
     rtc_config: RTCConfig | None = None
 
+    # -----------------------------------------------------------------
+    # TransformerRLT configuration
+    # [NEW] These fields control the lightweight encoder-decoder transformer
+    # that distills the VLM's token embeddings into a single RL token z_rl.
+    # -----------------------------------------------------------------
+
+    # Training mode controls which loss is computed on each forward pass:
+    #   "action"         — standard SmolVLA flow-matching loss on actions.
+    #                      TransformerRLT is not used.
+    #   "reconstruction" — TransformerRLT reconstruction loss only.
+    #                      The VLM runs a prefix-only forward (no action suffix)
+    #                      and its final-layer embeddings are fed to the RLT.
+    #                      The VLA action head is skipped entirely.
+    #                      Optionally finetune the VLM by setting train_expert_only=False.
+    training_mode: str = "action"  # "action" | "reconstruction"
+
+    # Master switch: set to False to skip the RLT entirely (e.g. pure BC training).
+    use_transformer_rlt: bool = True
+
+    # Internal dimension of the RLT transformer. Can be smaller than the VLM
+    # hidden size (e.g. 512 vs 2048) to keep the RLT lightweight.
+    # Must be divisible by rlt_nhead.
+    rlt_d_model: int = 512
+
+    # Number of attention heads in every RLT encoder/decoder layer.
+    rlt_nhead: int = 8
+
+    # Depth of the RLT encoder (processes [z1,...,zM,e_rl]).
+    rlt_num_encoder_layers: int = 3
+
+    # Depth of the RLT decoder (autoregressively reconstructs z from z_rl).
+    rlt_num_decoder_layers: int = 3
+
+    # Feed-forward hidden dimension inside each RLT transformer layer.
+    rlt_dim_ff: int = 2048
+
+    # Dropout probability used throughout the RLT.
+    rlt_dropout: float = 0.1
+
     compile_model: bool = False  # Whether to use torch.compile for model optimization
     compile_mode: str = "max-autotune"  # Torch compile mode
 

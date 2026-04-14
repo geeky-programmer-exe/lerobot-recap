@@ -64,6 +64,8 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.rtc.modeling_rtc import RTCProcessor
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.policies.smolvla.smolvlm_with_expert import SmolVLMWithExpertModel
+# [NEW] Import the RLT module that converts VLM encoder outputs into the RL token z_rl.
+from lerobot.policies.smolvla.transformer_rlt import TransformerRLT
 from lerobot.policies.utils import (
     populate_queues,
 )
@@ -376,30 +378,54 @@ class SmolVLAPolicy(PreTrainedPolicy):
         actions = self.prepare_action(batch)
         actions_is_pad = batch.get("action_is_pad")
         loss_dict = {}
-        losses = self.model.forward(images, img_masks, lang_tokens, lang_masks, state, actions, noise, time)
-        original_action_dim = self.config.action_feature.shape[0]
-        losses = losses[:, :, :original_action_dim]
-        loss_dict["losses_after_forward"] = losses.clone().mean().item()
 
-        if actions_is_pad is not None:
-            in_episode_bound = ~actions_is_pad
-            losses = losses * in_episode_bound.unsqueeze(-1)
-            loss_dict["losses_after_in_ep_bound"] = losses.clone().mean().item()
+        # [CHANGED] model.forward() now returns (action_losses, rlt_loss).
+        # Exactly one of the two will be non-None depending on training_mode:
+        #   "action"         → (action_losses, None)
+        #   "reconstruction" → (None, rlt_loss)
+        action_losses, rlt_loss = self.model.forward(
+            images, img_masks, lang_tokens, lang_masks, state, actions, noise, time
+        )
 
-        # Remove padding
-        losses = losses[:, :, : self.config.max_action_dim]
-        loss_dict["losses_after_rm_padding"] = losses.clone().mean().item()
+        # ------------------------------------------------------------------ #
+        # "action" mode: process flow-matching losses as before               #
+        # ------------------------------------------------------------------ #
+        if action_losses is not None:
+            original_action_dim = self.config.action_feature.shape[0]
+            action_losses = action_losses[:, :, :original_action_dim]
+            loss_dict["losses_after_forward"] = action_losses.clone().mean().item()
 
-        if reduction == "none":
-            # Return per-sample losses (B,) by averaging over time and action dims
-            per_sample_loss = losses.mean(dim=(1, 2))
-            loss_dict["loss"] = per_sample_loss.mean().item()
-            return per_sample_loss, loss_dict
+            if actions_is_pad is not None:
+                in_episode_bound = ~actions_is_pad
+                action_losses = action_losses * in_episode_bound.unsqueeze(-1)
+                loss_dict["losses_after_in_ep_bound"] = action_losses.clone().mean().item()
+
+            # Remove padding
+            action_losses = action_losses[:, :, : self.config.max_action_dim]
+            loss_dict["losses_after_rm_padding"] = action_losses.clone().mean().item()
+
+            if reduction == "none":
+                per_sample_loss = action_losses.mean(dim=(1, 2))
+                loss_dict["loss"] = per_sample_loss.mean().item()
+                return per_sample_loss, loss_dict
+            else:
+                loss = action_losses.mean()
+                loss_dict["loss"] = loss.item()
+                return loss, loss_dict
+
+        # ------------------------------------------------------------------ #
+        # [NEW] "reconstruction" mode: return RLT loss directly               #
+        # ------------------------------------------------------------------ #
         else:
-            # Default: return scalar mean loss
-            loss = losses.mean()
-            loss_dict["loss"] = loss.item()
-            return loss, loss_dict
+            loss_dict["rlt_loss"] = rlt_loss.item()
+            loss_dict["loss"] = rlt_loss.item()
+            if reduction == "none":
+                # Expand scalar to (batch,) so the caller interface is consistent.
+                bsize = state.shape[0]
+                per_sample_loss = rlt_loss.expand(bsize)
+                return per_sample_loss, loss_dict
+            else:
+                return rlt_loss, loss_dict
 
     def prepare_images(self, batch):
         """Apply SmolVLA preprocessing to the images, like resizing to 224x224 and padding to keep aspect ratio, and
@@ -594,6 +620,24 @@ class VLAFlowMatching(nn.Module):
         self.prefix_length = self.config.prefix_length
         self.rtc_processor = rtc_processor
 
+        # [NEW] TransformerRLT: a lightweight encoder-decoder transformer that
+        # distills the VLM's prefix token embeddings into a single RL token z_rl.
+        #
+        # input_dim is the VLM's text hidden size (e.g. 2048 for SmolVLM2-500M).
+        # The RLT uses a smaller internal d_model (e.g. 512) to stay lightweight.
+        # Only instantiated when use_transformer_rlt=True; skipped otherwise.
+        if self.config.use_transformer_rlt:
+            vlm_hidden_size = self.vlm_with_expert.config.text_config.hidden_size
+            self.transformer_rlt = TransformerRLT(
+                input_dim=vlm_hidden_size,
+                d_model=self.config.rlt_d_model,
+                nhead=self.config.rlt_nhead,
+                num_encoder_layers=self.config.rlt_num_encoder_layers,
+                num_decoder_layers=self.config.rlt_num_decoder_layers,
+                dim_ff=self.config.rlt_dim_ff,
+                dropout=self.config.rlt_dropout,
+            )
+
         # Compile model if requested
         if config.compile_model:
             torch.set_float32_matmul_precision("high")
@@ -761,42 +805,118 @@ class VLAFlowMatching(nn.Module):
         return embs, pad_masks, att_masks
 
     def forward(
-        self, images, img_masks, lang_tokens, lang_masks, state, actions, noise=None, time=None
+        self, images, img_masks, lang_tokens, lang_masks, state, actions=None, noise=None, time=None
     ) -> Tensor:
-        """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
-        if noise is None:
-            noise = self.sample_noise(actions.shape, actions.device)
+        """Training forward pass. Returns different losses depending on training_mode:
 
-        if time is None:
-            time = self.sample_time(actions.shape[0], actions.device)
+        "action" mode (default):
+            Runs the full VLA (VLM prefix + action-expert suffix) and returns
+            the flow-matching MSE loss on the action predictions.
+            TransformerRLT is not used.
+            Returns: (action_losses, None)
+                action_losses — shape (batch, chunk_size, max_action_dim)
 
-        time_expanded = time[:, None, None]
-        x_t = time_expanded * noise + (1 - time_expanded) * actions
-        u_t = noise - actions
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            images, img_masks, lang_tokens, lang_masks, state=state
-        )
-        suffix_embs, suffix_pad_masks, suffix_att_masks = self.embed_suffix(x_t, time)
+        "reconstruction" mode:
+            Runs only the VLM prefix forward (no action suffix), then feeds the
+            VLM's final-layer token embeddings into TransformerRLT.  The RLT is
+            trained to reconstruct those embeddings from its bottleneck token z_rl.
+            The VLA action head is skipped entirely.  To additionally finetune the
+            VLM backbone, set config.train_expert_only=False so VLM gradients are
+            not blocked by detach().
+            Returns: (None, rlt_loss)
+                rlt_loss — scalar MSE reconstruction loss
+        """
+        # ------------------------------------------------------------------ #
+        # "action" mode: standard SmolVLA flow-matching training              #
+        # ------------------------------------------------------------------ #
+        if self.config.training_mode == "action":
+            # actions must be provided in action mode
+            if noise is None:
+                noise = self.sample_noise(actions.shape, actions.device)
+            if time is None:
+                time = self.sample_time(actions.shape[0], actions.device)
 
-        pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
-        att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
+            time_expanded = time[:, None, None]
+            x_t = time_expanded * noise + (1 - time_expanded) * actions
+            u_t = noise - actions
 
-        att_2d_masks = make_att_2d_masks(pad_masks, att_masks)
-        position_ids = torch.cumsum(pad_masks, dim=1) - 1
-        (_, suffix_out), _ = self.vlm_with_expert.forward(
-            attention_mask=att_2d_masks,
-            position_ids=position_ids,
-            past_key_values=None,
-            inputs_embeds=[prefix_embs, suffix_embs],
-            use_cache=False,
-            fill_kv_cache=False,
-        )
-        suffix_out = suffix_out[:, -self.config.chunk_size :]
-        # Original openpi code, upcast attention output
-        suffix_out = suffix_out.to(dtype=torch.float32)
-        v_t = self.action_out_proj(suffix_out)
-        losses = F.mse_loss(u_t, v_t, reduction="none")
-        return losses
+            prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+                images, img_masks, lang_tokens, lang_masks, state=state
+            )
+            suffix_embs, suffix_pad_masks, suffix_att_masks = self.embed_suffix(x_t, time)
+
+            pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
+            att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
+            att_2d_masks = make_att_2d_masks(pad_masks, att_masks)
+            position_ids = torch.cumsum(pad_masks, dim=1) - 1
+
+            (_, suffix_out), _ = self.vlm_with_expert.forward(
+                attention_mask=att_2d_masks,
+                position_ids=position_ids,
+                past_key_values=None,
+                inputs_embeds=[prefix_embs, suffix_embs],
+                use_cache=False,
+                fill_kv_cache=False,
+            )
+            suffix_out = suffix_out[:, -self.config.chunk_size :]
+            suffix_out = suffix_out.to(dtype=torch.float32)
+            v_t = self.action_out_proj(suffix_out)
+            action_losses = F.mse_loss(u_t, v_t, reduction="none")
+            return action_losses, None
+
+        # ------------------------------------------------------------------ #
+        # "reconstruction" mode: train TransformerRLT on VLM prefix outputs  #
+        # ------------------------------------------------------------------ #
+        elif self.config.training_mode == "reconstruction":
+            assert self.config.use_transformer_rlt, (
+                "training_mode='reconstruction' requires use_transformer_rlt=True"
+            )
+
+            # [NEW] Prefix-only VLM forward — no action suffix needed.
+            # This mirrors the caching pass done in sample_actions() at inference.
+            # inputs_embeds=[prefix_embs, None] tells the model to process only
+            # the prefix stream; the expert suffix stream receives no input.
+            prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+                images, img_masks, lang_tokens, lang_masks, state=state
+            )
+            prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+            prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+
+            (prefix_out, _), _ = self.vlm_with_expert.forward(
+                attention_mask=prefix_att_2d_masks,
+                position_ids=prefix_position_ids,
+                past_key_values=None,
+                inputs_embeds=[prefix_embs, None],
+                use_cache=False,
+                fill_kv_cache=False,
+            )
+            # prefix_out: (batch, prefix_len, vlm_hidden_size)
+
+            # [NEW] Feed VLM final-layer embeddings z into TransformerRLT.
+            # Whether to detach z (and thus freeze VLM gradients) is controlled
+            # by train_expert_only:
+            #   True  — VLM is frozen; detach so only the RLT is trained.
+            #   False — allow gradients to flow back into the VLM for finetuning.
+            z = prefix_out.float()
+            if self.config.train_expert_only:
+                z = z.detach()
+
+            _, z_recon = self.transformer_rlt(z)  # z_recon: (batch, prefix_len, vlm_hidden)
+
+            # Mask out padding positions so they don't pollute the loss.
+            # prefix_pad_masks: (batch, prefix_len), True = valid token.
+            valid = prefix_pad_masks.unsqueeze(-1).float()  # (batch, prefix_len, 1)
+            rlt_loss = (
+                F.mse_loss(z_recon * valid, z * valid, reduction="sum")
+                / valid.sum().clamp(min=1)
+            )
+            return None, rlt_loss
+
+        else:
+            raise ValueError(
+                f"Unknown training_mode '{self.config.training_mode}'. "
+                "Expected 'action' or 'reconstruction'."
+            )
 
     def sample_actions(
         self,
