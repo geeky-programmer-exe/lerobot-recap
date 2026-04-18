@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=peg-sft
+#SBATCH --job-name=peg-sft-c10
 #SBATCH --partition=GPU-shared
 #SBATCH --account=cis260117p
 #SBATCH --gres=gpu:v100-32:1
 #SBATCH --time=20:00:00
-#SBATCH --output=/ocean/projects/cis260117p/shared/logs/peg-sft_%j.out
-#SBATCH --error=/ocean/projects/cis260117p/shared/logs/peg-sft_%j.err
+#SBATCH --output=/ocean/projects/cis260117p/shared/logs/peg-sft-c10_%j.out
+#SBATCH --error=/ocean/projects/cis260117p/shared/logs/peg-sft-c10_%j.err
 
 REPO=/ocean/projects/cis260117p/$USER/lerobot
 OCEAN=/ocean/projects/cis260117p/shared
@@ -30,8 +30,9 @@ lerobot-train \
   --log_freq=100 \
   --save_freq=5000 \
   --num_workers=4 \
-  --output_dir=$OCEAN/checkpoints/peg-sft \
+  --policy.chunk_size=10 \
+  --output_dir=$OCEAN/checkpoints/peg-sft-c10 \
   --wandb.enable=true \
   --wandb.entity=idl_34 \
   --wandb.project=rlt-smolvla \
-  --job_name=peg-sft
+  --job_name=peg-sft-c10
