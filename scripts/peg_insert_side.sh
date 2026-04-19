@@ -1,11 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=peg-sft-c10
 #SBATCH --partition=GPU-shared
 #SBATCH --account=cis260117p
 #SBATCH --gres=gpu:v100-32:1
 #SBATCH --time=20:00:00
-#SBATCH --output=/ocean/projects/cis260117p/shared/logs/peg-sft-c10_%j.out
-#SBATCH --error=/ocean/projects/cis260117p/shared/logs/peg-sft-c10_%j.err
+#SBATCH --job-name=peg-sft-c10
+#SBATCH --output=/ocean/projects/cis260117p/shared/logs/%x_%j.out
+#SBATCH --error=/ocean/projects/cis260117p/shared/logs/%x_%j.err
+
+RUN_NAME=${SLURM_JOB_NAME:-peg-sft-c10}
 
 REPO=/ocean/projects/cis260117p/$USER/lerobot
 OCEAN=/ocean/projects/cis260117p/shared
@@ -17,6 +19,7 @@ export WANDB_DIR=$OCEAN/wandb
 module load anaconda3
 conda activate rlt
 cd $REPO
+mkdir -p $OCEAN/checkpoints/$RUN_NAME
 
 lerobot-train \
   --policy.type=smolvla \
@@ -31,8 +34,9 @@ lerobot-train \
   --save_freq=5000 \
   --num_workers=4 \
   --policy.chunk_size=10 \
-  --output_dir=$OCEAN/checkpoints/peg-sft-c10 \
+  --policy.n_action_steps=10 \
+  --output_dir=$OCEAN/checkpoints/$RUN_NAME \
   --wandb.enable=true \
   --wandb.entity=idl_34 \
   --wandb.project=rlt-smolvla \
-  --job_name=peg-sft-c10
+  --job_name=$RUN_NAME
