@@ -3,7 +3,6 @@
 #SBATCH --account=cis260117p
 #SBATCH --gres=gpu:v100-32:1
 #SBATCH --time=20:00:00
-#SBATCH --job-name=peg-sft-c10
 #SBATCH --output=/ocean/projects/cis260117p/shared/logs/%x_%j.out
 #SBATCH --error=/ocean/projects/cis260117p/shared/logs/%x_%j.err
 

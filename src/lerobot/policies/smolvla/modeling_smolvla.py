@@ -918,6 +918,30 @@ class VLAFlowMatching(nn.Module):
                 "Expected 'action' or 'reconstruction'."
             )
 
+    @torch.no_grad()
+    def get_rl_state(self, images, img_masks, lang_tokens, lang_masks, state) -> torch.Tensor:
+        """
+        Returns:
+            z_rl: (batch, rlt_d_model) e.g. (batch, 512)
+        """
+        assert hasattr(self, "transformer_rlt"), (
+            "get_rl_state requires use_transformer_rlt=True in SmolVLAConfig"
+        )
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+            images, img_masks, lang_tokens, lang_masks, state=state
+        )
+        prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+        (prefix_out, _), _ = self.vlm_with_expert.forward(
+            attention_mask=prefix_att_2d_masks,
+            position_ids=prefix_position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, None],
+            use_cache=False,
+            fill_kv_cache=False,
+        )
+        return self.transformer_rlt.encode(prefix_out.float())  # (batch, rlt_d_model)
+
     def sample_actions(
         self,
         images,

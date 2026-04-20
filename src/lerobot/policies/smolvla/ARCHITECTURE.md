@@ -82,6 +82,8 @@ At inference, actions are denoised from pure noise over `num_steps=10` Euler ste
 
 TransformerRLT is a lightweight encoder-decoder transformer that distills the VLM's `M` final-layer prefix token embeddings `z = {z_1, ..., z_M}` into a single **RL token** `z_rl`. The bottleneck design forces `z_rl` to encode all task-relevant information.
 
+For the MetaWorld peg-insert-side-v3 setup, M is not fixed — it is the padded prefix length for the longest sequence in the batch. Its constituent parts are: 258 image tokens (1024 patches divided by connector scale factor 4, plus 2 special tokens), up to 48 language tokens padded to the longest in the batch, and 1 state token. In practice M is approximately 270–280 for the task description used. The exact value depends on the tokenized length of the task string and can be confirmed by printing the prefix output shape during a forward pass.
+
 ```
 VLM prefix outputs z = [z_1, ..., z_M]     shape: (batch, M, H)
          │
@@ -89,7 +91,7 @@ VLM prefix outputs z = [z_1, ..., z_M]     shape: (batch, M, H)
    input_proj: Linear(H, d_model)           project to RLT internal dim
          │
          ▼
-   Positional Encoding (batch-first)
+   Positional Encoding — sinusoidal fixed (standard sin/cos formula, registered as buffer, not learned)
          │
          │   Append learned <rl> token e_rl to the END
          ▼
@@ -97,7 +99,7 @@ VLM prefix outputs z = [z_1, ..., z_M]     shape: (batch, M, H)
          │
          ▼
    ┌─────────────────────┐
-   │   RLT Encoder       │  3 layers, nhead=8, d_model=512, Pre-LN
+   │   RLT Encoder       │  3 layers, nhead=8, d_model=2048, Pre-LN
    └──────────┬──────────┘
               │
          enc_out[:, -1, :]   ← last sequence position = z_rl
@@ -113,7 +115,7 @@ VLM prefix outputs z = [z_1, ..., z_M]     shape: (batch, M, H)
               │
               ▼
    ┌─────────────────────┐
-   │   RLT Decoder       │  3 layers, nhead=8, d_model=512, Pre-LN
+   │   RLT Decoder       │  3 layers, nhead=8, d_model=2048, Pre-LN
    │   cross-attn ← z_rl │  memory = z_rl (the bottleneck)
    └──────────┬──────────┘
               │
@@ -132,7 +134,7 @@ The decoder must reconstruct all `M` embeddings `z_recon ≈ z` using **only** `
 | Parameter | Value |
 |---|---|
 | `input_dim` | VLM hidden size `H` (set automatically from backbone config) |
-| `d_model` | 512 |
+| `d_model` | 2048 |
 | `nhead` | 8 |
 | `num_encoder_layers` | 3 |
 | `num_decoder_layers` | 3 |
@@ -171,7 +173,11 @@ Trained components (default): action expert, action projections, state projectio
 
 ### Phase 2 — RLT reconstruction training (`training_mode="reconstruction"`)
 
-TransformerRLT is trained to reconstruct VLM prefix embeddings from `z_rl`. The VLA action head is completely skipped — no noisy actions, no expert stream.
+TransformerRLT is trained to reconstruct VLM prefix embeddings from `z_rl`. The VLA action head is completely skipped — no noisy actions, no expert stream. Training runs for 10,000 gradient steps as set in the training script. Uses the same MetaWorld peg-insert-side-v3 demo dataset as Phase 1.
+
+**Phase 2 is independent of Phase 1.** The training script (`scripts/train_rlt_token.sh`) does NOT pass `--policy.path=...`, so Phase 2 starts from the raw pretrained VLM weights (`load_vlm_weights=true`) with a randomly-initialized action head and `state_proj`. Only the TransformerRLT is updated during Phase 2. The action head remains random until Phase 3 patches it in from a separate Phase 1 checkpoint (see Checkpoint Handoff below).
+
+Note: `state_proj` is also random in Phase 2 and gets replaced by Phase 1's trained weights in Phase 3. This causes a small distribution shift on the state token between phases; it is accepted as a second-order effect because the state token is ~1/270 of the prefix on MetaWorld.
 
 ```
 Batch (images, language, state)    ← actions not needed
@@ -183,8 +189,12 @@ embed_prefix()
 VLM prefix-only forward            ← no suffix/expert stream
         │
   prefix_out (batch, M, H)         ← VLM final-layer embeddings z
+                                      post-final-layer-norm output (same as HuggingFace last_hidden_state)
         │
-  detach() if train_expert_only    ← freeze VLM; or allow gradients to finetune
+  detach() if train_expert_only    ← [CORRECTION NEEDED] per RLT paper Eq 2, stop-gradient should be
+                                      unconditional. In practice this is always True (train_rlt_token.sh
+                                      always sets train_expert_only=true), so the bug is dormant but the
+                                      code should be fixed to detach unconditionally regardless of the flag.
         │
         ▼
 TransformerRLT.forward(z)
@@ -199,15 +209,38 @@ TransformerRLT.forward(z)
              (+ VLM weights if train_expert_only=False)
 ```
 
+### Phase 3 — Actor-Critic RL training (external, see `ACTOR_CRITIC_DESIGN.md`)
+
+Everything in SmolVLA + TransformerRLT is **frozen**. A separate lightweight actor-critic (TD3) is trained using `z_rl` as the state representation.
+
+```
+Observation (images, language, state)
+        │
+        ▼
+VLAFlowMatching.get_rl_state()     ← new method added to modeling_smolvla.py
+        │
+        ├─ embed_prefix() → VLM prefix-only forward → prefix_out (B, M, 2048)
+        └─ TransformerRLT.encode(prefix_out) → z_rl (B, 512)
+
+z_rl (512) + proprio (32) → rl_state (544)    ← stored in ReplayBuffer
+
+rl_state + VLA_ref_action (10×4=40) → RLTActor MLP → action_mean (10×4)
+                                                   + fixed_noise  → executed_action
+
+rl_state + executed_action → CriticEnsemble → Q1, Q2
+```
+
 ### Gradient flow summary
 
-| Component | Phase 1 (action) | Phase 2 (reconstruction) |
-|---|---|---|
-| Vision encoder | frozen (default) | frozen (default) |
-| VLM text model | frozen (default) | frozen if `train_expert_only=True`; trainable if `False` |
-| Action expert | trained | not used |
-| Action projections | trained | not used |
-| TransformerRLT | not used | trained |
+| Component | Phase 1 (action) | Phase 2 (reconstruction) | Phase 3 (actor-critic RL) |
+|---|---|---|---|
+| Vision encoder | frozen (default) | frozen (default) | frozen |
+| VLM text model | frozen (default) | frozen — train_expert_only=true always set in training script | frozen |
+| Action expert | trained | not used | frozen |
+| Action projections | trained | not used | frozen |
+| TransformerRLT | not used | trained | frozen |
+| RLTActor | not used | not used | trained |
+| CriticEnsemble | not used | not used | trained |
 
 ---
 
@@ -228,7 +261,13 @@ value = value_head(z_rl)
 
 ---
 
-## File Map
+## Checkpoint Handoff Between Phases
+
+**Phase 1 → Phase 2**: no handoff. Phase 2 starts from the pretrained VLM (via `load_vlm_weights=true`) with a randomly-initialized action head. Only TransformerRLT is trained.
+
+**Phase 2 → Phase 3**: **two checkpoints required.** Phase 3 (`src/lerobot/scripts/train_actor_critic_rlt.py`) takes both `--vla_checkpoint` (Phase 1) and `--rlt_checkpoint` (Phase 2). It loads Phase 2 as the base policy (for VLM + TransformerRLT) and then patches in the action-head modules (`action_in_proj`, `action_out_proj`, `action_time_mlp_in`, `action_time_mlp_out`, `state_proj`) from Phase 1 so the policy can also produce VLA reference actions for regularization. Everything is then frozen; only RLTActor and RLTCritic are trained.
+
+---
 
 | File | Role |
 |---|---|
