@@ -12,6 +12,7 @@ OCEAN=/ocean/projects/cis260117p/shared
 export HF_LEROBOT_HOME=$OCEAN/data
 export HF_HOME=$OCEAN/hf_cache
 export WANDB_DIR=$OCEAN/wandb
+export MUJOCO_GL=osmesa
 
 module load anaconda3
 conda activate rlt

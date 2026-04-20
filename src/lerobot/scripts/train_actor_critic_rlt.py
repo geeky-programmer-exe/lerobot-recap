@@ -47,7 +47,7 @@ def tokenize_task(vla: SmolVLAPolicy, task_description: str, device: torch.devic
         max_length=cfg.tokenizer_max_length,
         truncation=True,
     )
-    return encoded["input_ids"].to(device), encoded["attention_mask"].to(device)
+    return encoded["input_ids"].to(device), encoded["attention_mask"].bool().to(device)
 
 
 def obs_to_smolvla_batch(
