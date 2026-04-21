@@ -99,9 +99,6 @@ def collect_episode(
         rl_state = torch.cat([z_rl, proprio], dim=-1)
         vla_ref_flat = vla_ref.flatten(1)                       # (1, 40)
 
-        # --- Pick executed action ---
-        # Rollout always feeds the full VLA ref to the actor. Ref-action dropout
-        # is applied only inside the actor loss (see compute_td3_actor_loss).
         if use_actor and actor is not None:
             action_chunk = actor.select_action(z_rl, proprio, vla_ref_flat, add_noise=True)
         else:
@@ -134,6 +131,7 @@ def collect_episode(
 
         next_z_rl, next_proprio, next_vla_ref = extract_rl_state_and_vla_ref(vla, next_obs, device)
         next_rl_state = torch.cat([next_z_rl, next_proprio], dim=-1)
+        next_vla_ref_flat = next_vla_ref.flatten(1)
 
         replay.add(
             state={"rl_state": rl_state.squeeze(0).cpu()},
@@ -142,7 +140,10 @@ def collect_episode(
             next_state={"rl_state": next_rl_state.squeeze(0).cpu()},
             done=done,
             truncated=truncated,
-            complementary_info={"vla_ref_action": vla_ref_flat.squeeze(0).cpu()},
+            complementary_info={
+                "vla_ref_action": vla_ref_flat.squeeze(0).cpu(),
+                "next_vla_ref_action": next_vla_ref_flat.squeeze(0).cpu(),
+            },
         )
         transitions_added += 1
 
@@ -321,11 +322,12 @@ def train(args):
             action_flat = batch["action"].to(device)
             reward = batch["reward"].to(device)
             next_rl_state = batch["next_state"]["rl_state"].to(device)
+            next_vla_ref = batch["complementary_info"]["next_vla_ref_action"].to(device)
             done = batch["done"].float().to(device)
 
             # --- Critic update (every step) ---
             c_loss = compute_td3_critic_loss(
-                rl_state, action_flat, reward, next_rl_state, done,
+                rl_state, action_flat, reward, next_rl_state, next_vla_ref, done,
                 critic, target_critic, target_actor, config,
             )
             critic_optimizer.zero_grad()

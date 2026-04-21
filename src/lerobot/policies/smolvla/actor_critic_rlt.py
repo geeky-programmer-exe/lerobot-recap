@@ -188,6 +188,7 @@ def compute_td3_critic_loss(
     action_flat: torch.Tensor,     # (B, 40)
     reward: torch.Tensor,          # (B,)
     next_rl_state: torch.Tensor,   # (B, 2080)
+    next_vla_ref_flat: torch.Tensor,  # (B, 40)
     done: torch.Tensor,            # (B,) float
     critic: RLTCritic,
     target_critic: RLTCritic,
@@ -199,24 +200,20 @@ def compute_td3_critic_loss(
     Q_target = r + γ^C · (1−done) · min(Q1_tgt, Q2_tgt)(s', ã')
     L = MSE(Q1(s,a), Q_target) + MSE(Q2(s,a), Q_target)
 
-    For the target actor at next states we use zeros for the VLA reference input
-    (equivalent to applying dropout with p=1). This avoids re-running the VLA
-    for every next state in the batch while staying consistent with the dropout
-    training distribution.
+    The target actor is conditioned on the stored next-state VLA reference action
+    collected at rollout time. This keeps the Bellman target aligned with the
+    policy used during rollout without re-running the frozen VLA during replay.
     """
     with torch.no_grad():
         next_z_rl = next_rl_state[:, : config.z_rl_dim]
         next_proprio = next_rl_state[:, config.z_rl_dim :]
-        next_vla_ref = torch.zeros(
-            next_z_rl.shape[0], config.action_flat_dim, device=rl_state.device
-        )
-        next_action = target_actor(next_z_rl, next_proprio, next_vla_ref)
+        next_action = target_actor(next_z_rl, next_proprio, next_vla_ref_flat)
         next_action_flat = next_action.flatten(1)
 
         # TD3 target policy smoothing
         noise = torch.randn_like(next_action_flat) * config.target_noise_std
         noise = noise.clamp(-config.target_noise_clip, config.target_noise_clip)
-        next_action_flat = (next_action_flat + noise).clamp(-1.0, 1.0)
+        next_action_flat = next_action_flat + noise
 
         q1_tgt, q2_tgt = target_critic(next_rl_state, next_action_flat)
         q_next = torch.min(q1_tgt, q2_tgt)
