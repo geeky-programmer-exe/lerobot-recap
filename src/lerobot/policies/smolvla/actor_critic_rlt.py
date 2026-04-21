@@ -112,12 +112,12 @@ class RLTActor(nn.Module):
         vla_ref_flat: torch.Tensor,
         add_noise: bool = True,
     ) -> torch.Tensor:
-        """Sample action for environment rollout; clamps to [-1, 1]."""
+        """Sample action for environment rollout in normalized action space."""
         mean = self.forward(z_rl, proprio, vla_ref_flat)
         if add_noise:
             std = self.config.actor_output_variance ** 0.5
             mean = mean + torch.randn_like(mean) * std
-        return mean.clamp(-1.0, 1.0)
+        return mean
 
 
 # ---------------------------------------------------------------------------
@@ -245,10 +245,11 @@ def compute_td3_actor_loss(
     z_rl = rl_state[:, : config.z_rl_dim]
     proprio = rl_state[:, config.z_rl_dim :]
 
-    if torch.rand(1).item() < config.ref_action_dropout_prob:
-        vla_ref_input = torch.zeros_like(vla_ref_flat)
-    else:
-        vla_ref_input = vla_ref_flat
+    keep_mask = (
+        torch.rand(vla_ref_flat.shape[0], 1, device=vla_ref_flat.device)
+        >= config.ref_action_dropout_prob
+    ).to(vla_ref_flat.dtype)
+    vla_ref_input = vla_ref_flat * keep_mask
 
     action = actor(z_rl, proprio, vla_ref_input)
     action_flat = action.flatten(1)
