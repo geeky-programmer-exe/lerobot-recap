@@ -303,7 +303,6 @@ def train(args):
     for episode in range(config.total_episodes):
         t0 = time.time()
 
-        # Collect one episode with actor
         ep_info = collect_episode(
             env, vla, actor=actor, replay=replay,
             preprocessor=preprocessor, postprocessor=postprocessor,
@@ -313,6 +312,7 @@ def train(args):
         # G gradient updates per chunk-transition collected this episode
         n_updates = config.G * ep_info["transitions"]
         critic_losses, actor_losses, q1_vals, beta_losses = [], [], [], []
+        actor_q_terms, delta_abs_means, delta_abs_maxes, ref_keep_fracs = [], [], [], []
         critic_grad_norms, actor_grad_norms = [], []
 
         for _ in range(n_updates):
@@ -342,16 +342,20 @@ def train(args):
                 # VLA ref is read from the replay buffer (stored at collection time)
                 vla_ref = batch["complementary_info"]["vla_ref_action"].to(device)
 
-                a_loss, q1_val, beta_val = compute_td3_actor_loss(
+                actor_stats = compute_td3_actor_loss(
                     rl_state, vla_ref, actor, critic, config
                 )
                 actor_optimizer.zero_grad()
-                a_loss.backward()
+                actor_stats["loss"].backward()
                 a_grad_norm = torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
                 actor_optimizer.step()
-                actor_losses.append(a_loss.item())
-                q1_vals.append(q1_val)
-                beta_losses.append(beta_val)
+                actor_losses.append(actor_stats["loss"].item())
+                q1_vals.append(actor_stats["q1_mean"])
+                beta_losses.append(actor_stats["beta_loss"])
+                actor_q_terms.append(actor_stats["actor_q_term"])
+                delta_abs_means.append(actor_stats["delta_abs_mean"])
+                delta_abs_maxes.append(actor_stats["delta_abs_max"])
+                ref_keep_fracs.append(actor_stats["ref_keep_frac"])
                 actor_grad_norms.append(a_grad_norm.item())
 
                 polyak_update(actor, target_actor, config.tau)
@@ -363,7 +367,11 @@ def train(args):
         mean_c_loss = sum(critic_losses) / len(critic_losses) if critic_losses else 0.0
         mean_a_loss = sum(actor_losses) / len(actor_losses) if actor_losses else 0.0
         mean_q1 = sum(q1_vals) / len(q1_vals) if q1_vals else 0.0
+        mean_actor_q_term = sum(actor_q_terms) / len(actor_q_terms) if actor_q_terms else 0.0
         mean_beta = sum(beta_losses) / len(beta_losses) if beta_losses else 0.0
+        mean_delta_abs = sum(delta_abs_means) / len(delta_abs_means) if delta_abs_means else 0.0
+        max_delta_abs = max(delta_abs_maxes) if delta_abs_maxes else 0.0
+        mean_ref_keep = sum(ref_keep_fracs) / len(ref_keep_fracs) if ref_keep_fracs else 0.0
         mean_c_gnorm = sum(critic_grad_norms) / len(critic_grad_norms) if critic_grad_norms else 0.0
         mean_a_gnorm = sum(actor_grad_norms) / len(actor_grad_norms) if actor_grad_norms else 0.0
 
@@ -371,7 +379,8 @@ def train(args):
             f"Ep {episode+1}/{config.total_episodes} | "
             f"success={ep_info['success']} | steps={ep_info['steps']} | reward={ep_info['reward']:.3f} | "
             f"c_loss={mean_c_loss:.4f} | a_loss={mean_a_loss:.4f} | "
-            f"q1={mean_q1:.4f} | beta_loss={mean_beta:.4f} | "
+            f"q1={mean_q1:.4f} | actor_q={mean_actor_q_term:.4f} | beta_loss={mean_beta:.4f} | "
+            f"delta_abs={mean_delta_abs:.4f}/{max_delta_abs:.4f} | keep={mean_ref_keep:.3f} | "
             f"buf={replay.size} | t={ep_time:.1f}s"
         )
 
@@ -384,7 +393,11 @@ def train(args):
                 "critic_loss": mean_c_loss,
                 "actor_loss": mean_a_loss,
                 "q1_mean": mean_q1,
+                "actor_q_term": mean_actor_q_term,
                 "vla_reg_loss": mean_beta,
+                "delta_abs_mean": mean_delta_abs,
+                "delta_abs_max": max_delta_abs,
+                "ref_keep_frac": mean_ref_keep,
                 "grad_norm_critic": mean_c_gnorm,
                 "grad_norm_actor": mean_a_gnorm,
                 "buffer_size": replay.size,

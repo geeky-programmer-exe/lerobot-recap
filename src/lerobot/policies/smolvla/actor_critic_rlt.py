@@ -250,8 +250,18 @@ def compute_td3_actor_loss(
 
     action = actor(z_rl, proprio, vla_ref_input)
     action_flat = action.flatten(1)
+    delta = action_flat - vla_ref_flat
 
     q1 = critic.q1(rl_state, action_flat)
     beta_loss = F.mse_loss(action_flat, vla_ref_flat)
-    total = -q1.mean() + config.beta * beta_loss
-    return total, q1.mean().item(), beta_loss.item()
+    actor_q_term = -q1.mean()
+    total = actor_q_term + config.beta * beta_loss
+    return {
+        "loss": total,
+        "q1_mean": q1.mean().item(),
+        "actor_q_term": actor_q_term.item(),
+        "beta_loss": beta_loss.item(),
+        "delta_abs_mean": delta.abs().mean().item(),
+        "delta_abs_max": delta.abs().max().item(),
+        "ref_keep_frac": keep_mask.mean().item(),
+    }
