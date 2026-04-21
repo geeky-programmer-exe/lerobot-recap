@@ -31,7 +31,7 @@ from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.rl.buffer import ReplayBuffer
 from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS, OBS_STATE
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", force=True)
 log = logging.getLogger(__name__)
 
 
@@ -133,6 +133,7 @@ def collect_episode(
 
     episode_success = False
     total_steps = 0
+    total_reward = 0.0
     transitions_added = 0
 
     while True:
@@ -159,6 +160,7 @@ def collect_episode(
             action_np = action_chunk[0, step_in_chunk].detach().cpu().numpy()
             next_obs, reward, terminated, truncated, info = env.step(action_np)
             chunk_reward += reward
+            total_reward += reward
             total_steps += 1
             done = terminated or truncated
 
@@ -173,7 +175,7 @@ def collect_episode(
         replay.add(
             state={"rl_state": rl_state.squeeze(0).cpu()},
             action=action_chunk.flatten(1).squeeze(0).detach().cpu(),
-            reward=chunk_reward,
+            reward=float(chunk_reward),
             next_state={"rl_state": next_rl_state.squeeze(0).cpu()},
             done=done,
             truncated=truncated,
@@ -188,6 +190,7 @@ def collect_episode(
     return {
         "success": episode_success,
         "steps": total_steps,
+        "reward": float(total_reward),
         "transitions": transitions_added,
     }
 
@@ -344,7 +347,8 @@ def train(args):
 
         # G gradient updates per chunk-transition collected this episode
         n_updates = config.G * ep_info["transitions"]
-        critic_losses, actor_losses = [], []
+        critic_losses, actor_losses, q1_vals, beta_losses = [], [], [], []
+        critic_grad_norms, actor_grad_norms = [], []
 
         for _ in range(n_updates):
             batch = replay.sample(config.batch_size_rl)
@@ -362,23 +366,27 @@ def train(args):
             )
             critic_optimizer.zero_grad()
             c_loss.backward()
-            torch.nn.utils.clip_grad_norm_(critic.parameters(), 1.0)
+            c_grad_norm = torch.nn.utils.clip_grad_norm_(critic.parameters(), 1.0)
             critic_optimizer.step()
             critic_losses.append(c_loss.item())
+            critic_grad_norms.append(c_grad_norm.item())
 
             # --- Actor + target update (every 2nd step) ---
             if global_grad_step % 2 == 0:
                 # VLA ref is read from the replay buffer (stored at collection time)
                 vla_ref = batch["complementary_info"]["vla_ref_action"].to(device)
 
-                a_loss = compute_td3_actor_loss(
+                a_loss, q1_val, beta_val = compute_td3_actor_loss(
                     rl_state, vla_ref, actor, critic, config
                 )
                 actor_optimizer.zero_grad()
                 a_loss.backward()
-                torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
+                a_grad_norm = torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
                 actor_optimizer.step()
                 actor_losses.append(a_loss.item())
+                q1_vals.append(q1_val)
+                beta_losses.append(beta_val)
+                actor_grad_norms.append(a_grad_norm.item())
 
                 polyak_update(actor, target_actor, config.tau)
                 polyak_update(critic, target_critic, config.tau)
@@ -388,11 +396,16 @@ def train(args):
         ep_time = time.time() - t0
         mean_c_loss = sum(critic_losses) / len(critic_losses) if critic_losses else 0.0
         mean_a_loss = sum(actor_losses) / len(actor_losses) if actor_losses else 0.0
+        mean_q1 = sum(q1_vals) / len(q1_vals) if q1_vals else 0.0
+        mean_beta = sum(beta_losses) / len(beta_losses) if beta_losses else 0.0
+        mean_c_gnorm = sum(critic_grad_norms) / len(critic_grad_norms) if critic_grad_norms else 0.0
+        mean_a_gnorm = sum(actor_grad_norms) / len(actor_grad_norms) if actor_grad_norms else 0.0
 
         log.info(
             f"Ep {episode+1}/{config.total_episodes} | "
-            f"success={ep_info['success']} | steps={ep_info['steps']} | "
+            f"success={ep_info['success']} | steps={ep_info['steps']} | reward={ep_info['reward']:.3f} | "
             f"c_loss={mean_c_loss:.4f} | a_loss={mean_a_loss:.4f} | "
+            f"q1={mean_q1:.4f} | beta_loss={mean_beta:.4f} | "
             f"buf={replay.size} | t={ep_time:.1f}s"
         )
 
@@ -400,8 +413,14 @@ def train(args):
             wandb.log({
                 "episode": episode,
                 "ep_success": int(ep_info["success"]),
+                "reward_per_episode": ep_info["reward"],
+                "episode_length": ep_info["steps"],
                 "critic_loss": mean_c_loss,
                 "actor_loss": mean_a_loss,
+                "q1_mean": mean_q1,
+                "vla_reg_loss": mean_beta,
+                "grad_norm_critic": mean_c_gnorm,
+                "grad_norm_actor": mean_a_gnorm,
                 "buffer_size": replay.size,
                 "grad_steps": global_grad_step,
             })

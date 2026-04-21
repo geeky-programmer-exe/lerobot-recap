@@ -255,4 +255,5 @@ def compute_td3_actor_loss(
 
     q1 = critic.q1(rl_state, action_flat)
     beta_loss = F.mse_loss(action_flat, vla_ref_flat)
-    return -q1.mean() + config.beta * beta_loss
+    total = -q1.mean() + config.beta * beta_loss
+    return total, q1.mean().item(), beta_loss.item()
