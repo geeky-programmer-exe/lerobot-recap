@@ -2,19 +2,17 @@
 set -euo pipefail
 
 BETAS=(1.0 2.0 3.0)
-Q_MAXES=(0.2 0.3)
 Q_START_SRS=(0.3 0.5)
 
 for beta in "${BETAS[@]}"; do
-  for q_max in "${Q_MAXES[@]}"; do
-    for q_start_sr in "${Q_START_SRS[@]}"; do
-      job_name=$(printf "rlt-b%s-q%s-s%s" "$beta" "$q_max" "$q_start_sr" | tr '.' 'p')
+  for q_start_sr in "${Q_START_SRS[@]}"; do
+      job_name=$(printf "rlt-b%s-q1p0-s%s" "$beta" "$q_start_sr" | tr '.' 'p')
       echo "Submitting ${job_name}"
       sbatch \
         --job-name "${job_name}" \
         --export=ALL,\
 BETA="${beta}",\
-Q_LOSS_WEIGHT_MAX="${q_max}",\
+Q_LOSS_WEIGHT_MAX="1.0",\
 Q_LOSS_WEIGHT_INCREMENT="0.05",\
 Q_CURRICULUM_START_SUCCESS_RATE="${q_start_sr}",\
 REF_ACTION_DROPOUT_PROB="0.5",\
@@ -31,6 +29,5 @@ CRITIC_LR="3e-4",\
 GAMMA="0.99",\
 TAU="0.005" \
         scripts/train_rlt_ac.sh
-    done
   done
 done
