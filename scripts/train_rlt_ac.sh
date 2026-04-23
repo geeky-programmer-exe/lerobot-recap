@@ -19,28 +19,45 @@ conda activate rlt
 cd $REPO
 
 RUN_NAME=${SLURM_JOB_NAME:-rlt-ac}
+TOTAL_EPISODES=${TOTAL_EPISODES:-5000}
+WARMUP_EPISODES=${WARMUP_EPISODES:-200}
+EVAL_FREQ=${EVAL_FREQ:-100}
+EVAL_EPISODES=${EVAL_EPISODES:-10}
+BATCH_SIZE=${BATCH_SIZE:-256}
+ACTOR_LR=${ACTOR_LR:-3e-4}
+CRITIC_LR=${CRITIC_LR:-3e-4}
+GAMMA=${GAMMA:-0.99}
+TAU=${TAU:-0.005}
+BETA=${BETA:-1.0}
+REF_ACTION_DROPOUT_PROB=${REF_ACTION_DROPOUT_PROB:-0.5}
+ACTOR_OUTPUT_VARIANCE=${ACTOR_OUTPUT_VARIANCE:-0.05}
+Q_LOSS_WEIGHT_MAX=${Q_LOSS_WEIGHT_MAX:-0.5}
+Q_LOSS_WEIGHT_INCREMENT=${Q_LOSS_WEIGHT_INCREMENT:-0.05}
+Q_CURRICULUM_START_SUCCESS_RATE=${Q_CURRICULUM_START_SUCCESS_RATE:-0.3}
+EVAL_VIDEOS_TO_SAVE=${EVAL_VIDEOS_TO_SAVE:-1}
+GRAD_UPDATES_PER_TRANSITION=${GRAD_UPDATES_PER_TRANSITION:-1}
 
 python src/lerobot/scripts/train_actor_critic_rlt.py \
   --vla_checkpoint=$OCEAN/checkpoints/peg-sft-c10/checkpoints/last/pretrained_model \
   --rlt_checkpoint=$OCEAN/checkpoints/rlt3/checkpoints/last/pretrained_model \
   --output_dir=$OCEAN/checkpoints/$RUN_NAME \
-  --total_episodes=5000 \
-  --warmup_episodes=200 \
-  --eval_freq=100 \
-  --eval_episodes=10 \
-  --batch_size=256 \
-  --actor_lr=3e-4 \
-  --critic_lr=3e-4 \
-  --gamma=0.99 \
-  --tau=0.005 \
-  --beta=1.0 \
-  --ref_action_dropout_prob=0.5 \
-  --actor_output_variance=0.05 \
-  --q_loss_weight_max=0.5 \
-  --q_loss_weight_increment=0.05 \
-  --q_curriculum_start_success_rate=0.3 \
-  --eval_videos_to_save=1 \
-  --G=1 \
+  --total_episodes=$TOTAL_EPISODES \
+  --warmup_episodes=$WARMUP_EPISODES \
+  --eval_freq=$EVAL_FREQ \
+  --eval_episodes=$EVAL_EPISODES \
+  --batch_size=$BATCH_SIZE \
+  --actor_lr=$ACTOR_LR \
+  --critic_lr=$CRITIC_LR \
+  --gamma=$GAMMA \
+  --tau=$TAU \
+  --beta=$BETA \
+  --ref_action_dropout_prob=$REF_ACTION_DROPOUT_PROB \
+  --actor_output_variance=$ACTOR_OUTPUT_VARIANCE \
+  --q_loss_weight_max=$Q_LOSS_WEIGHT_MAX \
+  --q_loss_weight_increment=$Q_LOSS_WEIGHT_INCREMENT \
+  --q_curriculum_start_success_rate=$Q_CURRICULUM_START_SUCCESS_RATE \
+  --eval_videos_to_save=$EVAL_VIDEOS_TO_SAVE \
+  --G=$GRAD_UPDATES_PER_TRANSITION \
   --wandb \
   --wandb_project=rlt-smolvla \
   --wandb_entity=idl_34 \
