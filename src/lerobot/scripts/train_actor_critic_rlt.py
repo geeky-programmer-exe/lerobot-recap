@@ -351,6 +351,7 @@ def train(args):
     global_grad_step = 0
     best_success_rate = 0.0
     q_curriculum_start_episode = None
+    q_curriculum_triggered = False
 
     for episode in range(config.total_episodes):
         t0 = time.time()
@@ -360,8 +361,6 @@ def train(args):
             preprocessor=preprocessor, postprocessor=postprocessor,
             config=config, device=device, use_actor=True,
         )
-        if ep_info["success"] and q_curriculum_start_episode is None:
-            q_curriculum_start_episode = episode
         q_loss_weight = get_q_loss_weight(episode, q_curriculum_start_episode, config)
         ref_action_dropout_prob = get_ref_action_dropout_prob(q_loss_weight, config)
 
@@ -479,6 +478,17 @@ def train(args):
             )
             log.info(f"  [EVAL] Episode {episode+1} | success_rate={success_rate:.2f}")
 
+            if (
+                not q_curriculum_triggered
+                and success_rate >= args.q_curriculum_start_success_rate
+            ):
+                q_curriculum_start_episode = episode
+                q_curriculum_triggered = True
+                log.info(
+                    f"  [CURRICULUM] Starting Q/dropout curriculum at episode {episode+1} "
+                    f"(eval success_rate={success_rate:.2f} >= {args.q_curriculum_start_success_rate:.2f})"
+                )
+
             if args.wandb:
                 log_payload = {"eval/success_rate": success_rate, "episode": episode}
                 if saved_videos:
@@ -543,6 +553,7 @@ def parse_args():
     p.add_argument("--actor_output_variance", type=float, default=0.1, help="Exploration noise variance added to actor outputs during rollout")
     p.add_argument("--q_loss_weight_max", type=float, default=1.0, help="Maximum weight on the critic term in actor loss")
     p.add_argument("--q_loss_weight_increment", type=float, default=0.1, help="Size of each staircase jump in critic-term weight after first success")
+    p.add_argument("--q_curriculum_start_success_rate", type=float, default=0.3, help="Evaluation success-rate threshold required to start the Q/dropout curriculum")
     p.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     p.add_argument("--tau", type=float, default=0.005, help="Polyak rate")
     p.add_argument("--actor_lr", type=float, default=3e-4)

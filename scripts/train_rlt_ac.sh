@@ -24,9 +24,9 @@ python src/lerobot/scripts/train_actor_critic_rlt.py \
   --vla_checkpoint=$OCEAN/checkpoints/peg-sft-c10/checkpoints/last/pretrained_model \
   --rlt_checkpoint=$OCEAN/checkpoints/rlt3/checkpoints/last/pretrained_model \
   --output_dir=$OCEAN/checkpoints/$RUN_NAME \
-  --total_episodes=1000 \
-  --warmup_episodes=100 \
-  --eval_freq=50 \
+  --total_episodes=5000 \
+  --warmup_episodes=200 \
+  --eval_freq=100 \
   --eval_episodes=10 \
   --batch_size=256 \
   --actor_lr=3e-4 \
@@ -36,8 +36,9 @@ python src/lerobot/scripts/train_actor_critic_rlt.py \
   --beta=1.0 \
   --ref_action_dropout_prob=0.5 \
   --actor_output_variance=0.05 \
-  --q_loss_weight_max=1.0 \
-  --q_loss_weight_increment=0.1 \
+  --q_loss_weight_max=0.5 \
+  --q_loss_weight_increment=0.05 \
+  --q_curriculum_start_success_rate=0.3 \
   --eval_videos_to_save=1 \
   --G=1 \
   --wandb \
