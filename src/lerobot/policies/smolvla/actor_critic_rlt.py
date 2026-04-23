@@ -215,7 +215,7 @@ def compute_td3_critic_loss(
         # TD3 target policy smoothing
         noise = torch.randn_like(next_action_flat) * config.target_noise_std
         noise = noise.clamp(-config.target_noise_clip, config.target_noise_clip)
-        next_action_flat = (next_action_flat + noise).clamp(-1.0, 1.0)
+        next_action_flat = next_action_flat + noise
 
         q1_tgt, q2_tgt = target_critic(next_rl_state, next_action_flat)
         q_next = torch.min(q1_tgt, q2_tgt)
