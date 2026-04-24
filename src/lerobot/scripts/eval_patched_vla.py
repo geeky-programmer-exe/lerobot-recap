@@ -14,6 +14,7 @@ import torch
 from lerobot.envs.metaworld import MetaworldEnv
 from lerobot.envs.utils import preprocess_observation
 from lerobot.policies.factory import make_pre_post_processors
+from lerobot.policies.smolvla.actor_critic_rlt import RLTActor, RLTActorCriticConfig
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.scripts.train_actor_critic_rlt import extract_rl_state_and_vla_ref
 from lerobot.utils.constants import OBS_LANGUAGE_TOKENS, OBS_LANGUAGE_ATTENTION_MASK
@@ -33,6 +34,16 @@ def main(args):
     del phase1
 
     vla.eval().to(device)
+
+    # Optionally load RLT actor checkpoint
+    actor = None
+    if args.ac_checkpoint is not None:
+        ac_config = RLTActorCriticConfig()
+        actor = RLTActor(ac_config).to(device)
+        ckpt = torch.load(args.ac_checkpoint, map_location=device, weights_only=False)
+        actor.load_state_dict(ckpt["actor"])
+        actor.eval()
+        print(f"Loaded RLT actor from {args.ac_checkpoint}")
 
     preprocessor, postprocessor = make_pre_post_processors(
         vla.config, pretrained_path=args.vla_checkpoint
@@ -56,9 +67,16 @@ def main(args):
             obs["task"] = env.task_description
             obs = preprocessor(obs)
 
-            # VLA reference action — RLT output (z_rl) is discarded
-            _, _, vla_ref = extract_rl_state_and_vla_ref(vla, obs, device)
-            action_chunk_exec = postprocessor(vla_ref)
+            z_rl, proprio, vla_ref = extract_rl_state_and_vla_ref(vla, obs, device)
+
+            if actor is not None:
+                with torch.no_grad():
+                    action_chunk_exec = postprocessor(
+                        actor.select_action(z_rl, proprio, vla_ref.flatten(1), add_noise=False)
+                    )
+            else:
+                # VLA reference action — RLT output (z_rl) is discarded
+                action_chunk_exec = postprocessor(vla_ref)
 
             for step_i in range(vla.config.chunk_size):
                 raw_obs, _, terminated, truncated, info = env.step(
@@ -88,6 +106,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--vla_checkpoint", required=True)
     p.add_argument("--rlt_checkpoint", required=True)
+    p.add_argument("--ac_checkpoint", required=False, default=None)
     p.add_argument("--task", default="peg-insert-side-v3")
     p.add_argument("--n_episodes", type=int, default=20)
     p.add_argument("--video_dir", default=None, help="Directory to save episode videos")
