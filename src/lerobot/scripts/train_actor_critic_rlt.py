@@ -105,6 +105,7 @@ def collect_episode(
     device: torch.device,
     use_actor: bool = True,
     sparse_reward: bool = False,
+    time_penalty: bool = False,
 ) -> dict:
     """Run one full episode and push chunk-level transitions into the replay buffer.
 
@@ -150,7 +151,9 @@ def collect_episode(
         for step_i in range(config.chunk_size_rl):
             action_np = action_chunk_exec[0, step_i].detach().cpu().numpy()
             raw_next_obs, reward, terminated, truncated, info = env.step(action_np)
-            if sparse_reward:
+            if time_penalty:
+                reward = 0.0 if bool(info.get("is_success", False)) else -1.0
+            elif sparse_reward:
                 reward = float(info.get("is_success", False))
             chunk_reward += (config.gamma ** step_i) * reward
             total_reward += reward
@@ -349,6 +352,7 @@ def train(args):
             preprocessor=preprocessor, postprocessor=postprocessor,
             config=config, device=device, use_actor=False,
             sparse_reward=args.sparse_reward,
+            time_penalty=args.time_penalty,
         )
         warmup_successes += int(info["success"])
         log.info(f"  Warmup ep {ep+1}/{config.warmup_episodes} | success={info['success']} | "
@@ -373,6 +377,7 @@ def train(args):
             preprocessor=preprocessor, postprocessor=postprocessor,
             config=config, device=device, use_actor=True,
             sparse_reward=args.sparse_reward,
+            time_penalty=args.time_penalty,
         )
         q_loss_weight = get_q_loss_weight(episode, q_curriculum_start_episode, config)
         ref_action_dropout_prob = get_ref_action_dropout_prob(q_loss_weight, config)
@@ -572,6 +577,7 @@ def parse_args():
     p.add_argument("--actor_lr", type=float, default=3e-4)
     p.add_argument("--critic_lr", type=float, default=3e-4)
     p.add_argument("--sparse_reward", action="store_true", help="Use binary success indicator as reward instead of dense Metaworld reward")
+    p.add_argument("--time_penalty", action="store_true", help="Use -1 per step and 0 on success instead of the environment reward")
 
     # WandB
     p.add_argument("--wandb", action="store_true")

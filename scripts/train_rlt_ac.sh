@@ -19,7 +19,7 @@ conda activate rlt
 cd $REPO
 
 RUN_NAME=${SLURM_JOB_NAME:-rlt-ac}
-TOTAL_EPISODES=${TOTAL_EPISODES:-5000}
+TOTAL_EPISODES=${TOTAL_EPISODES:-1000}
 WARMUP_EPISODES=${WARMUP_EPISODES:-200}
 EVAL_FREQ=${EVAL_FREQ:-100}
 EVAL_EPISODES=${EVAL_EPISODES:-10}
@@ -36,6 +36,16 @@ Q_LOSS_WEIGHT_INCREMENT=${Q_LOSS_WEIGHT_INCREMENT:-0.05}
 Q_CURRICULUM_START_SUCCESS_RATE=${Q_CURRICULUM_START_SUCCESS_RATE:-0.3}
 EVAL_VIDEOS_TO_SAVE=${EVAL_VIDEOS_TO_SAVE:-1}
 GRAD_UPDATES_PER_TRANSITION=${GRAD_UPDATES_PER_TRANSITION:-1}
+SPARSE_REWARD=${SPARSE_REWARD:-0}
+TIME_PENALTY=${TIME_PENALTY:-0}
+
+EXTRA_REWARD_FLAGS=""
+if [ "$SPARSE_REWARD" = "1" ]; then
+  EXTRA_REWARD_FLAGS="$EXTRA_REWARD_FLAGS --sparse_reward"
+fi
+if [ "$TIME_PENALTY" = "1" ]; then
+  EXTRA_REWARD_FLAGS="$EXTRA_REWARD_FLAGS --time_penalty"
+fi
 
 python src/lerobot/scripts/train_actor_critic_rlt.py \
   --vla_checkpoint=$OCEAN/checkpoints/peg-sft-c10/checkpoints/last/pretrained_model \
@@ -58,6 +68,7 @@ python src/lerobot/scripts/train_actor_critic_rlt.py \
   --q_curriculum_start_success_rate=$Q_CURRICULUM_START_SUCCESS_RATE \
   --eval_videos_to_save=$EVAL_VIDEOS_TO_SAVE \
   --G=$GRAD_UPDATES_PER_TRANSITION \
+  $EXTRA_REWARD_FLAGS \
   --wandb \
   --wandb_project=rlt-smolvla \
   --wandb_entity=idl_34 \
