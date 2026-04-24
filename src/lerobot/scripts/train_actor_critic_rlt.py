@@ -464,23 +464,25 @@ def train(args):
 
         if args.wandb:
             wandb.log({
-                "episode": episode,
-                "ep_success": int(ep_info["success"]),
-                "reward_per_episode": ep_info["reward"],
-                "episode_length": ep_info["steps"],
-                "critic_loss": mean_c_loss,
-                "actor_loss": mean_a_loss,
-                "actor_q_weight": q_loss_weight,
-                "actor_ref_dropout_prob": ref_action_dropout_prob,
-                "actor_q_term": mean_actor_q_term,
-                "actor_reg_term": mean_beta,
-                "delta_abs_mean": mean_delta_abs,
-                "delta_abs_max": max_delta_abs,
-                "ref_keep_frac": mean_ref_keep,
-                "grad_norm_critic": mean_c_gnorm,
-                "grad_norm_actor": mean_a_gnorm,
-                "buffer_size": replay.size,
-                "grad_steps": global_grad_step,
+                "outcome/ep_success": int(ep_info["success"]),
+                "outcome/reward_per_episode": ep_info["reward"],
+                "outcome/episode_length": ep_info["steps"],
+                
+                "actor/actor_loss": mean_a_loss,
+                "actor/actor_q_term": mean_actor_q_term,
+                "actor/actor_reg_term": mean_beta,
+                "actor/actor_q_weight": q_loss_weight,
+                "actor/actor_ref_dropout_prob": ref_action_dropout_prob,
+                "behaviour/delta_abs_mean": mean_delta_abs,
+                "behaviour/delta_abs_max": max_delta_abs,
+                "behaviour/ref_keep_frac": mean_ref_keep,
+                "behaviour/critic_loss": mean_c_loss,
+                
+                "optimization/grad_norm_actor": mean_a_gnorm,
+                "optimization/grad_norm_critic": mean_c_gnorm,
+                "optimization/buffer_size": replay.size,
+                "optimization/grad_steps": global_grad_step,
+                "optimization/episode": episode,
             })
 
         # --- Evaluation ---
@@ -508,10 +510,13 @@ def train(args):
                 )
 
             if args.wandb:
-                log_payload = {"eval/success_rate": success_rate, "episode": episode}
+                log_payload = {
+                    "outcome/eval_success_rate": success_rate,
+                    "optimization/episode": episode,
+                }
                 if saved_videos:
                     for i, video_path in enumerate(saved_videos):
-                        log_payload[f"eval/video_{i}"] = wandb.Video(str(video_path), format="mp4")
+                        log_payload[f"outcome/video_{i}"] = wandb.Video(str(video_path), format="mp4")
                     artifact = wandb.Artifact(f"eval-videos-{args.job_name}-ep{episode+1}", type="evaluation")
                     for video_path in saved_videos:
                         artifact.add_file(str(video_path))
