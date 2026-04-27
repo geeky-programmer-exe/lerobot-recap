@@ -22,7 +22,7 @@ cd $REPO
 
 python src/lerobot/scripts/eval_zrl_pca.py \
     --vla_checkpoint=$OCEAN/checkpoints/peg-sft-c10/checkpoints/last/pretrained_model \
-    --rlt_checkpoint=$OCEAN/checkpoints/rlt3/checkpoints/last/pretrained_model  \
+    --rlt_checkpoint=$OCEAN/checkpoints/rlt-no-x-attn/checkpoints/last/pretrained_model  \
     --n_episodes 30 \
     --perturb_std 0.02 \
     --max_videos 5 \
